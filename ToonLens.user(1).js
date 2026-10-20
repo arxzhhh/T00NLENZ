@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ToonLens
 // @namespace    https://toonlens.local/
-// @version      1.3.3
+// @version      1.4.0
 // @description  Live manhwa / manga / webtoon translator for Safari. Reader mode that detects and translates text as you scroll.
 // @match        http://*/*
 // @match        https://*/*
@@ -137,7 +137,7 @@ const DEFAULTS = {
   v: 2, provider: 'gemini', apiKey: '', model: '', baseUrl: 'https://api.openai.com/v1', localBase: 'http://localhost:1234/v1', orModel: '', thinking: 'low', keys: [], keyIdx: 0, keysText: '',
   target: 'English', source: 'auto', style: 'natural', honorifics: true, sfx: true, glossary: '', extra: '',
   font: 'comic', fontScale: 100, pad: 6, caps: false, cover: true,
-  prefetch: 2, concurrency: 1, scrollSpeed: 4, autoStart: false, pill: 'detected',
+  prefetch: 2, concurrency: 1, scrollSpeed: 4, autoStart: false, pill: 'detected', translateAll: true,
   imgMax: 1000, quality: 0.85,
 };
 const MODEL_DEFAULT = { gemini: 'gemini-2.5-flash-lite', anthropic: 'claude-sonnet-5-5', openai: '', openrouter: '' };
@@ -183,6 +183,9 @@ async function loadSettings() {
   const v = await gmGet('settings', null);
   if (v && typeof v === 'object') {
     if (v.v !== 2) { v.v = 2; v.concurrency = 1; v.prefetch = Math.min(v.prefetch || 2, 2); if (v.model === 'gemini-flash-latest') v.model = ''; }
+    /* New in 1.4: translate the whole chapter up-front instead of waiting for pages to scroll
+       into view. Existing users get it on unless they explicitly turned it off before. */
+    if (typeof v.translateAll !== 'boolean') v.translateAll = true;
     /* 'gemini-2.5-flash' stopped having a free tier for many keys — fall back to the empty
        default so modelName() picks a model that is currently free. */
     if (v.model === 'gemini-2.5-flash') v.model = '';
@@ -1050,9 +1053,15 @@ function buildReader() {
 
 function rebuildIO() {
   if (ST.io) ST.io.disconnect();
+  /* "Translate the whole chapter" mode: every page is queued right away, no scrolling needed.
+     The IntersectionObserver still runs so that when the option is toggled off mid-chapter we
+     can rebuild it and go back to viewport-based prefetching. */
+  if (S.translateAll) { ST.pages.forEach(p => { p.near = true; }); }
   if (typeof IntersectionObserver === 'undefined') { ST.pages.forEach(p => { p.near = true; }); return; }
-  ST.io = new IntersectionObserver(es => { for (const e of es) e.target._p.near = e.isIntersecting; schedule(); },
-    { rootMargin: '30% 0px ' + clamp(S.prefetch, 1, 8) * 100 + '% 0px' });
+  ST.io = new IntersectionObserver(es => {
+    for (const e of es) e.target._p.near = S.translateAll ? true : e.isIntersecting;
+    schedule();
+  }, { rootMargin: '30% 0px ' + clamp(S.prefetch, 1, 8) * 100 + '% 0px' });
   ST.pages.forEach(p => ST.io.observe(p.el));
 }
 
@@ -1242,7 +1251,8 @@ const SCHEMA = [
     { k: 'cover', t: 'check', l: 'Erase the original text' },
   ]],
   ['Reading', [
-    { k: 'prefetch', t: 'range', l: 'Translate ahead', min: 1, max: 6, step: 1, u: ' screens' },
+    { k: 'translateAll', t: 'check', l: 'Translate the whole chapter (don\'t wait for scrolling)' },
+    { k: 'prefetch', t: 'range', l: 'Translate ahead', min: 1, max: 6, step: 1, u: ' screens', show: s => !s.translateAll },
     { k: 'concurrency', t: 'range', l: 'Parallel requests', min: 1, max: 4, step: 1 },
     { k: 'scrollSpeed', t: 'range', l: 'Auto-scroll speed', min: 1, max: 10, step: 1 },
     { k: 'autoStart', t: 'check', l: 'Open the reader automatically on chapter pages' },
